@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mi-billetera-v1';
+const CACHE_NAME = 'mi-billetera-v2';
 const CORE_ASSETS = [
   './',
   './index.html',

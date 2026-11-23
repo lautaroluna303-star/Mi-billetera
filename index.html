@@ -471,6 +471,14 @@
       </form>
 
       <div id="catList"></div>
+
+      <h2 class="section-title">Copia de seguridad</h2>
+      <div class="notif-hint"><span>Guardá tus datos en un archivo por si cambiás de celu o borrás el navegador.</span></div>
+      <div class="submit-row" style="margin-top:10px;">
+        <button type="button" class="pill-btn" id="btnExport">Exportar</button>
+        <button type="button" class="pill-btn ghost" id="btnImport">Importar</button>
+      </div>
+      <input type="file" id="importFile" accept="application/json,.json" style="display:none">
     </section>
 
   </main>
@@ -739,6 +747,14 @@ function renderResumen(){
     barlistEl.innerHTML = rows.map(function(r){
       var name = r.id==='sin-cat' ? 'Sin categoría' : catName(r.id);
       var pct = maxTotal ? Math.max(4, Math.round(r.total/maxTotal*100)) : 0;
+      var cat = STATE.categories.find(function(x){return x.id===r.id;});
+      var bud = cat && cat.budget, fillBg = '', budTxt = '';
+      if(bud){
+        var ratio = r.total/bud;
+        pct = Math.min(100, Math.max(4, Math.round(ratio*100)));
+        fillBg = 'background:'+(ratio>1 ? 'var(--red)' : (ratio>=0.8 ? 'var(--gold)' : 'var(--green)'))+';';
+        budTxt = ' / '+fmtMoney(bud);
+      }
       var subEntries = Object.keys(r.subs);
       var subHtml = '';
       if(STATE.expandedBar===r.id && subEntries.length){
@@ -747,8 +763,8 @@ function renderResumen(){
         }).join('') + '</div>';
       }
       return '<div class="bar-row" data-catid="'+r.id+'">'+
-        '<div class="bar-top"><span class="cat">'+escapeHtml(name)+'</span><span class="amt">'+fmtMoney(r.total)+'</span></div>'+
-        '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div>'+
+        '<div class="bar-top"><span class="cat">'+escapeHtml(name)+'</span><span class="amt">'+fmtMoney(r.total)+budTxt+'</span></div>'+
+        '<div class="bar-track"><div class="bar-fill" style="'+fillBg+'width:'+pct+'%"></div></div>'+
         subHtml+
       '</div>';
     }).join('');
@@ -809,12 +825,15 @@ function renderMovimientos(){
     var sign = t.type==='gasto' ? '−' : (t.type==='ahorro' ? (t.amount<0 ? '+' : '−') : '+');
     html += '<div class="tx-row">'+
       '<span class="bar '+t.type+'"></span>'+
-      '<span class="mid"><div class="desc">'+desc+'</div><div class="chip">'+escapeHtml(chip)+'</div></span>'+
+      '<span class="mid" data-edit="'+t.id+'" style="cursor:pointer"><div class="desc">'+desc+'</div><div class="chip">'+escapeHtml(chip)+'</div></span>'+
       '<span class="amt '+t.type+'">'+sign+amtDisplay+'</span>'+
       '<button class="del" data-id="'+t.id+'" aria-label="Eliminar">×</button>'+
     '</div>';
   });
   el.innerHTML = html;
+  el.querySelectorAll('.mid[data-edit]').forEach(function(m){
+    m.addEventListener('click', function(){ startEditTx(m.getAttribute('data-edit')); });
+  });
   el.querySelectorAll('.del').forEach(function(b){
     b.addEventListener('click', function(){
       if(confirm('¿Eliminar este movimiento?')) Store.remove('transactions', b.getAttribute('data-id'));
@@ -870,6 +889,7 @@ function renderDeudas(){
         (d.paid
           ? '<button class="btn-unpaid" data-act="unpaid" data-id="'+d.id+'">Marcar sin pagar</button>'
           : '<button class="btn-paid" data-act="paid" data-id="'+d.id+'">Marcar pagada</button>')+
+        '<button class="btn-unpaid" data-act="edit" data-id="'+d.id+'">Editar</button>'+
         '<button class="btn-del" data-act="del" data-id="'+d.id+'">Eliminar</button>'+
       '</div>'+
     '</div>';
@@ -881,6 +901,7 @@ function renderDeudas(){
       var act = b.getAttribute('data-act');
       if(act==='paid') Store.update('debts', id, {paid:true});
       else if(act==='unpaid') Store.update('debts', id, {paid:false});
+      else if(act==='edit') startEditDebt(id);
       else if(act==='del'){ if(confirm('¿Eliminar esta deuda?')) Store.remove('debts', id); }
     });
   });
@@ -910,6 +931,7 @@ function renderCategorias(){
           return '<div class="subcat-row"><span>'+escapeHtml(s.name)+'</span><button data-id="'+s.id+'">🗑</button></div>';
         }).join('')+
         '<div class="add-subcat"><input type="text" placeholder="Nueva subcategoría" data-parent="'+c.id+'"><button data-parent="'+c.id+'">Agregar</button></div>'+
+        '<div class="add-subcat"><input type="number" inputmode="decimal" min="0" placeholder="Tope mensual ($)" value="'+(c.budget||'')+'" data-budget="'+c.id+'"><button data-budget="'+c.id+'">Guardar tope</button></div>'+
       '</div>'+
     '</div>';
   }).join('');
@@ -937,7 +959,15 @@ function renderCategorias(){
       if(confirm('¿Eliminar esta subcategoría?')) Store.remove('categories', b.getAttribute('data-id'));
     });
   });
-  el.querySelectorAll('.add-subcat button').forEach(function(b){
+  el.querySelectorAll('.add-subcat button[data-budget]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var id = b.getAttribute('data-budget');
+      var v = parseFloat(el.querySelector('input[data-budget="'+id+'"]').value);
+      Store.update('categories', id, {budget: v>0 ? v : null});
+      STATE.expandedCat = id;
+    });
+  });
+  el.querySelectorAll('.add-subcat button[data-parent]').forEach(function(b){
     b.addEventListener('click', function(){
       var parentId = b.getAttribute('data-parent');
       var input = el.querySelector('input[data-parent="'+parentId+'"]');
@@ -977,14 +1007,54 @@ function populateSubcatSelect(){
 var txType = 'ingreso';
 var ahorroModo = 'deposito';
 
+function setTxType(t){
+  txType = t;
+  document.querySelectorAll('#txTypeSeg button').forEach(function(x){ x.classList.toggle('sel', x.getAttribute('data-val')===t); });
+  document.getElementById('txCatField').style.display = t==='gasto' ? 'block':'none';
+  document.getElementById('txSubcatField').style.display = t==='gasto' ? 'block':'none';
+  document.getElementById('ahorroModoField').style.display = t==='ahorro' ? 'block':'none';
+}
+function setAhorroModo(m){
+  ahorroModo = m;
+  document.querySelectorAll('#ahorroModoSeg button').forEach(function(x){ x.classList.toggle('sel', x.getAttribute('data-val')===m); });
+}
+function resetTxFields(){
+  STATE.editTxId = null;
+  document.getElementById('txAmount').value = '';
+  document.getElementById('txDesc').value = '';
+}
+function startEditTx(id){
+  var t = STATE.transactions.find(function(x){return x.id===id;}); if(!t) return;
+  populateCategorySelects();
+  STATE.editTxId = id;
+  setTxType(t.type);
+  if(t.type==='ahorro') setAhorroModo(t.amount<0 ? 'retiro' : 'deposito');
+  document.getElementById('txAmount').value = Math.abs(t.amount);
+  document.getElementById('txDate').value = t.date;
+  document.getElementById('txDesc').value = t.description || '';
+  if(t.type==='gasto'){
+    document.getElementById('txCategory').value = t.categoryId || '';
+    populateSubcatSelect();
+    document.getElementById('txSubcategory').value = t.subcategoryId || '';
+  }
+  document.getElementById('txForm').classList.add('open');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function startEditDebt(id){
+  var d = STATE.debts.find(function(x){return x.id===id;}); if(!d) return;
+  STATE.editDebtId = id;
+  document.getElementById('debtName').value = d.name;
+  document.getElementById('debtAmount').value = d.amount;
+  document.getElementById('debtDate').value = d.dueDate;
+  document.getElementById('debtNotes').value = d.notes || '';
+  document.getElementById('debtForm').classList.add('open');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
 function setupTxForm(){
   document.getElementById('txTypeSeg').addEventListener('click', function(e){
     var b = e.target.closest('button'); if(!b) return;
-    txType = b.getAttribute('data-val');
-    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('sel', x===b); });
-    document.getElementById('txCatField').style.display = txType==='gasto' ? 'block':'none';
-    document.getElementById('txSubcatField').style.display = txType==='gasto' ? 'block':'none';
-    document.getElementById('ahorroModoField').style.display = txType==='ahorro' ? 'block':'none';
+    setTxType(b.getAttribute('data-val'));
   });
   document.getElementById('ahorroModoSeg').addEventListener('click', function(e){
     var b = e.target.closest('button'); if(!b) return;
@@ -996,12 +1066,14 @@ function setupTxForm(){
   document.getElementById('toggleTxForm').addEventListener('click', function(){
     var f = document.getElementById('txForm');
     if(!f.classList.contains('open')){
+      resetTxFields();
       populateCategorySelects();
       document.getElementById('txDate').value = toISODate(new Date());
     }
     f.classList.toggle('open');
   });
   document.getElementById('cancelTx').addEventListener('click', function(){
+    resetTxFields();
     document.getElementById('txForm').classList.remove('open');
   });
 
@@ -1018,7 +1090,8 @@ function setupTxForm(){
     } else if(txType==='ahorro'){
       data.amount = ahorroModo==='retiro' ? -Math.abs(amount) : Math.abs(amount);
     }
-    Store.add('transactions', data);
+    if(STATE.editTxId){ delete data.createdAt; Store.update('transactions', STATE.editTxId, data); STATE.editTxId = null; }
+    else Store.add('transactions', data);
     document.getElementById('txAmount').value='';
     document.getElementById('txDesc').value='';
     document.getElementById('txForm').classList.remove('open');
@@ -1028,10 +1101,15 @@ function setupTxForm(){
 function setupDebtForm(){
   document.getElementById('toggleDebtForm').addEventListener('click', function(){
     var f = document.getElementById('debtForm');
-    if(!f.classList.contains('open')) document.getElementById('debtDate').value = toISODate(new Date());
+    if(!f.classList.contains('open')){
+      STATE.editDebtId = null;
+      ['debtName','debtAmount','debtNotes'].forEach(function(i){ document.getElementById(i).value=''; });
+      document.getElementById('debtDate').value = toISODate(new Date());
+    }
     f.classList.toggle('open');
   });
   document.getElementById('cancelDebt').addEventListener('click', function(){
+    STATE.editDebtId = null;
     document.getElementById('debtForm').classList.remove('open');
   });
   document.getElementById('debtForm').addEventListener('submit', function(e){
@@ -1043,7 +1121,8 @@ function setupDebtForm(){
     if(!name){ alert('Ingresá a quién le debés.'); return; }
     if(!amount || amount<=0){ alert('Ingresá un monto válido.'); return; }
     if(!date){ alert('Ingresá la fecha límite.'); return; }
-    Store.add('debts', {name:name, amount:amount, dueDate:date, notes:notes, paid:false, lastNotifiedDate:null, createdAt:Date.now()});
+    if(STATE.editDebtId){ Store.update('debts', STATE.editDebtId, {name:name, amount:amount, dueDate:date, notes:notes, lastNotifiedDate:null}); STATE.editDebtId = null; }
+    else Store.add('debts', {name:name, amount:amount, dueDate:date, notes:notes, paid:false, lastNotifiedDate:null, createdAt:Date.now()});
     document.getElementById('debtName').value='';
     document.getElementById('debtAmount').value='';
     document.getElementById('debtNotes').value='';
@@ -1103,6 +1182,34 @@ function setupNav(){
   }catch(e){}
 }
 
+function setupBackup(){
+  document.getElementById('btnExport').addEventListener('click', function(){
+    var data = {app:'mi-billetera', v:1, categories:STATE.categories, transactions:STATE.transactions, debts:STATE.debts};
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], {type:'application/json'}));
+    a.download = 'mi-billetera-'+toISODate(new Date())+'.json';
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+  var f = document.getElementById('importFile');
+  document.getElementById('btnImport').addEventListener('click', function(){ f.click(); });
+  f.addEventListener('change', function(){
+    var file = f.files[0]; if(!file) return;
+    var r = new FileReader();
+    r.onload = function(){
+      try{
+        var d = JSON.parse(r.result);
+        if(!Array.isArray(d.categories) || !Array.isArray(d.transactions) || !Array.isArray(d.debts)) throw 0;
+        if(!confirm('Esto reemplaza todos tus datos actuales por los del archivo. ¿Seguir?')) { f.value=''; return; }
+        STATE.categories = d.categories; STATE.transactions = d.transactions; STATE.debts = d.debts;
+        ['categories','transactions','debts'].forEach(function(c){ Store.saveLocal(c); });
+        render(); alert('Datos importados.');
+      }catch(e){ alert('El archivo no es una copia válida de Mi Billetera.'); }
+      f.value='';
+    };
+    r.readAsText(file);
+  });
+}
+
 function setupQuickAdd(){
   document.getElementById('quickAddIncome').addEventListener('click', function(){
     STATE.activeTab = 'movimientos';
@@ -1131,6 +1238,7 @@ setupTxForm();
 setupDebtForm();
 setupCatForm();
 setupQuickAdd();
+setupBackup();
 document.getElementById('txDate').value = toISODate(new Date());
 Store.init();
 
