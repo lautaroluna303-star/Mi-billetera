@@ -42,6 +42,11 @@ function fmtMoney(n){
   var neg = n<0; n = Math.abs(n);
   return (neg?'-':'') + '$ ' + n.toLocaleString('es-AR');
 }
+function fmtShort(n){
+  var a = Math.abs(n);
+  var s = a>=1000000 ? (a/1000000).toFixed(1).replace('.0','')+'M' : (a>=1000 ? Math.round(a/1000)+'k' : String(Math.round(a)));
+  return (n<0 ? '−' : '') + s;
+}
 function fmtMonthLabel(d){
   var s = d.toLocaleDateString('es-AR', {month:'long', year:'numeric'});
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -59,6 +64,21 @@ function daysUntil(iso){
   var today = new Date(); today.setHours(0,0,0,0);
   var d = new Date(iso+'T00:00:00');
   return Math.round((d-today)/86400000);
+}
+function addMonths(iso, n){
+  var p = iso.split('-'), y = +p[0], m = +p[1]-1, d = +p[2];
+  var last = new Date(y, m+n+1, 0).getDate();
+  return toISODate(new Date(y, m+n, Math.min(d, last)));
+}
+function debtRemaining(d){
+  if(d.paid) return 0;
+  if(d.kind==='cuotas') return d.amount * Math.max(0, (d.installments||1) - (d.paidCount||0));
+  return d.amount;
+}
+function debtKindLabel(d){
+  if(d.kind==='cuotas') return 'Cuota '+Math.min((d.paidCount||0)+1, d.installments)+' de '+d.installments+' · restan '+fmtMoney(debtRemaining(d));
+  if(d.kind==='mensual') return 'Se repite todos los meses';
+  return '';
 }
 function debtUrgency(debt){
   if(debt.paid) return 'paid';
@@ -193,10 +213,49 @@ function renderHeader(){
   document.getElementById('headerDisponible').textContent = fmtMoney(disponible);
 }
 
+function renderEvolucion(){
+  var el = document.getElementById('monthChart');
+  var base = STATE.currentMonth, data = [];
+  for(var i=5;i>=0;i--){
+    var mo = new Date(base.getFullYear(), base.getMonth()-i, 1);
+    var tt = totals(STATE.transactions.filter(function(t){
+      var d = new Date(t.date+'T00:00:00');
+      return d.getFullYear()===mo.getFullYear() && d.getMonth()===mo.getMonth();
+    }));
+    data.push({mo:mo, ing:tt.ingreso, gas:tt.gasto});
+  }
+  var max = Math.max.apply(null, data.map(function(x){ return Math.max(x.ing, x.gas); }));
+  if(!max){
+    el.innerHTML = '<div class="empty">Cuando cargues movimientos vas a ver acá cómo evolucionan mes a mes.</div>';
+    return;
+  }
+  var H = 110;
+  function bar(v, c){
+    return '<div style="flex:1;height:'+Math.max(2, Math.round(v/max*H))+'px;background:var(--'+c+');border-radius:5px 5px 0 0;box-shadow:0 0 8px color-mix(in srgb,var(--'+c+') 50%,transparent)"></div>';
+  }
+  var cols = data.map(function(x){
+    return '<div style="flex:1;display:flex;align-items:flex-end;gap:3px;height:'+H+'px">'+bar(x.ing,'green')+bar(x.gas,'red')+'</div>';
+  }).join('');
+  var labels = data.map(function(x, i){
+    var net = x.ing - x.gas, last = i===data.length-1;
+    var mname = x.mo.toLocaleDateString('es-AR', {month:'short'}).replace('.','');
+    return '<div style="flex:1;text-align:center;font-size:10.5px;color:'+(last?'var(--ink)':'var(--ink-muted)')+(last?';font-weight:600':'')+'">'+mname+
+      '<div style="font-size:10px;font-variant-numeric:tabular-nums;color:var('+(net>=0?'--green':'--red')+')">'+(net>0?'+':'')+fmtShort(net)+'</div></div>';
+  }).join('');
+  var dot = 'display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;';
+  el.innerHTML = '<div style="background:var(--well);box-shadow:var(--sunk);border-radius:var(--r-md);padding:16px 12px 12px">'+
+    '<div style="display:flex;gap:8px;align-items:flex-end;border-bottom:1px solid var(--edge-dk);padding-bottom:4px">'+cols+'</div>'+
+    '<div style="display:flex;gap:8px;margin-top:6px">'+labels+'</div>'+
+    '<div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:12px;font-size:11.5px;color:var(--ink-muted)">'+
+      '<span><span class="dot ingreso" style="'+dot+'"></span>Ingresos</span>'+
+      '<span><span class="dot gasto" style="'+dot+'"></span>Gastos</span>'+
+      '<span>Debajo: balance del mes</span></div></div>';
+}
+
 function renderResumen(){
   var all = totals(STATE.transactions);
   var disponible = all.ingreso - all.gasto - all.ahorro;
-  var deudaTotal = STATE.debts.filter(function(d){return !d.paid;}).reduce(function(a,d){return a+d.amount;},0);
+  var deudaTotal = STATE.debts.reduce(function(a,d){return a+debtRemaining(d);},0);
 
   document.getElementById('statDisponible').textContent = fmtMoney(disponible);
   document.getElementById('statAhorro').textContent = fmtMoney(all.ahorro);
@@ -268,6 +327,8 @@ function renderResumen(){
     });
   }
 
+  renderEvolucion();
+
   // proximos vencimientos
   var upcoming = STATE.debts.filter(function(d){return !d.paid;})
     .slice().sort(function(a,b){ return a.dueDate.localeCompare(b.dueDate); })
@@ -332,6 +393,19 @@ function renderMovimientos(){
   });
 }
 
+function payDebt(id){
+  var d = STATE.debts.find(function(x){return x.id===id;}); if(!d) return;
+  if(d.kind==='mensual'){
+    Store.update('debts', id, {dueDate:addMonths(d.dueDate,1), paidCount:(d.paidCount||0)+1, lastNotifiedDate:null});
+  } else if(d.kind==='cuotas'){
+    var pc = (d.paidCount||0)+1;
+    if(pc>=d.installments) Store.update('debts', id, {paid:true, paidCount:pc});
+    else Store.update('debts', id, {paidCount:pc, dueDate:addMonths(d.dueDate,1), lastNotifiedDate:null});
+  } else {
+    Store.update('debts', id, {paid:true});
+  }
+}
+
 function renderDeudas(){
   var unpaid = STATE.debts.filter(function(d){return !d.paid;});
   var dueNow = unpaid.filter(function(d){ return debtUrgency(d)==='overdue' || (debtUrgency(d)==='soon' && daysUntil(d.dueDate)<=0); });
@@ -372,14 +446,17 @@ function renderDeudas(){
   listEl.innerHTML = sorted.map(function(d){
     var urg = d.paid ? 'later' : debtUrgency(d);
     var whenClass = d.paid ? '' : (urg==='overdue' ? 'overdue' : (urg==='soon' ? 'soon' : ''));
+    var kindTxt = debtKindLabel(d);
+    var payTxt = d.kind==='cuotas' ? 'Pagar cuota' : (d.kind==='mensual' ? 'Pagar este mes' : 'Marcar pagada');
     return '<div class="debt-card '+urg+(d.paid?' paid':'')+'">'+
       '<div class="debt-top"><span class="name">'+escapeHtml(d.name)+'</span><span class="amt">'+fmtMoney(d.amount)+'</span></div>'+
       '<div class="debt-when '+whenClass+'">'+(d.paid ? 'Pagada · vencía '+fmtShortDate(d.dueDate) : debtWhenLabel(d)+' · '+fmtShortDate(d.dueDate))+'</div>'+
+      (kindTxt ? '<div class="debt-notes">'+kindTxt+'</div>' : '')+
       (d.notes ? '<div class="debt-notes">'+escapeHtml(d.notes)+'</div>' : '')+
       '<div class="debt-actions">'+
         (d.paid
           ? '<button class="btn-unpaid" data-act="unpaid" data-id="'+d.id+'">Marcar sin pagar</button>'
-          : '<button class="btn-paid" data-act="paid" data-id="'+d.id+'">Marcar pagada</button>')+
+          : '<button class="btn-paid" data-act="paid" data-id="'+d.id+'">'+payTxt+'</button>')+
         '<button class="btn-unpaid" data-act="edit" data-id="'+d.id+'">Editar</button>'+
         '<button class="btn-del" data-act="del" data-id="'+d.id+'">Eliminar</button>'+
       '</div>'+
@@ -390,8 +467,11 @@ function renderDeudas(){
     b.addEventListener('click', function(){
       var id = b.getAttribute('data-id');
       var act = b.getAttribute('data-act');
-      if(act==='paid') Store.update('debts', id, {paid:true});
-      else if(act==='unpaid') Store.update('debts', id, {paid:false});
+      if(act==='paid') payDebt(id);
+      else if(act==='unpaid'){
+        var dd = STATE.debts.find(function(x){return x.id===id;});
+        Store.update('debts', id, (dd && dd.kind==='cuotas') ? {paid:false, paidCount:Math.max(0,(dd.installments||1)-1)} : {paid:false});
+      }
       else if(act==='edit') startEditDebt(id);
       else if(act==='del'){ if(confirm('¿Eliminar esta deuda?')) Store.remove('debts', id); }
     });
@@ -497,6 +577,7 @@ function populateSubcatSelect(){
 
 var txType = 'ingreso';
 var ahorroModo = 'deposito';
+var debtKind = 'unica';
 
 function setTxType(t){
   txType = t;
@@ -508,6 +589,11 @@ function setTxType(t){
 function setAhorroModo(m){
   ahorroModo = m;
   document.querySelectorAll('#ahorroModoSeg button').forEach(function(x){ x.classList.toggle('sel', x.getAttribute('data-val')===m); });
+}
+function setDebtKind(k){
+  debtKind = k;
+  document.querySelectorAll('#debtKindSeg button').forEach(function(x){ x.classList.toggle('sel', x.getAttribute('data-val')===k); });
+  document.getElementById('debtCuotasField').style.display = k==='cuotas' ? 'block':'none';
 }
 function resetTxFields(){
   STATE.editTxId = null;
@@ -538,6 +624,8 @@ function startEditDebt(id){
   document.getElementById('debtAmount').value = d.amount;
   document.getElementById('debtDate').value = d.dueDate;
   document.getElementById('debtNotes').value = d.notes || '';
+  setDebtKind(d.kind || 'unica');
+  document.getElementById('debtCuotas').value = d.installments || '';
   document.getElementById('debtForm').classList.add('open');
   window.scrollTo({top:0, behavior:'smooth'});
 }
@@ -549,8 +637,7 @@ function setupTxForm(){
   });
   document.getElementById('ahorroModoSeg').addEventListener('click', function(e){
     var b = e.target.closest('button'); if(!b) return;
-    ahorroModo = b.getAttribute('data-val');
-    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('sel', x===b); });
+    setAhorroModo(b.getAttribute('data-val'));
   });
   document.getElementById('txCategory').addEventListener('change', populateSubcatSelect);
 
@@ -590,11 +677,16 @@ function setupTxForm(){
 }
 
 function setupDebtForm(){
+  document.getElementById('debtKindSeg').addEventListener('click', function(e){
+    var b = e.target.closest('button'); if(!b) return;
+    setDebtKind(b.getAttribute('data-val'));
+  });
   document.getElementById('toggleDebtForm').addEventListener('click', function(){
     var f = document.getElementById('debtForm');
     if(!f.classList.contains('open')){
       STATE.editDebtId = null;
-      ['debtName','debtAmount','debtNotes'].forEach(function(i){ document.getElementById(i).value=''; });
+      ['debtName','debtAmount','debtNotes','debtCuotas'].forEach(function(i){ document.getElementById(i).value=''; });
+      setDebtKind('unica');
       document.getElementById('debtDate').value = toISODate(new Date());
     }
     f.classList.toggle('open');
@@ -609,14 +701,20 @@ function setupDebtForm(){
     var amount = parseFloat(document.getElementById('debtAmount').value);
     var date = document.getElementById('debtDate').value;
     var notes = document.getElementById('debtNotes').value.trim();
+    var cuotas = parseInt(document.getElementById('debtCuotas').value, 10);
     if(!name){ alert('Ingresá a quién le debés.'); return; }
     if(!amount || amount<=0){ alert('Ingresá un monto válido.'); return; }
+    if(debtKind==='cuotas' && (!cuotas || cuotas<2)){ alert('Ingresá la cantidad de cuotas (2 o más).'); return; }
     if(!date){ alert('Ingresá la fecha límite.'); return; }
-    if(STATE.editDebtId){ Store.update('debts', STATE.editDebtId, {name:name, amount:amount, dueDate:date, notes:notes, lastNotifiedDate:null}); STATE.editDebtId = null; }
-    else Store.add('debts', {name:name, amount:amount, dueDate:date, notes:notes, paid:false, lastNotifiedDate:null, createdAt:Date.now()});
-    document.getElementById('debtName').value='';
-    document.getElementById('debtAmount').value='';
-    document.getElementById('debtNotes').value='';
+    var extra = {kind:debtKind, installments: debtKind==='cuotas' ? cuotas : null};
+    if(STATE.editDebtId){
+      Store.update('debts', STATE.editDebtId, Object.assign({name:name, amount:amount, dueDate:date, notes:notes, lastNotifiedDate:null}, extra));
+      STATE.editDebtId = null;
+    } else {
+      Store.add('debts', Object.assign({name:name, amount:amount, dueDate:date, notes:notes, paid:false, paidCount:0, lastNotifiedDate:null, createdAt:Date.now()}, extra));
+    }
+    ['debtName','debtAmount','debtNotes','debtCuotas'].forEach(function(i){ document.getElementById(i).value=''; });
+    setDebtKind('unica');
     document.getElementById('debtForm').classList.remove('open');
   });
 }
@@ -708,11 +806,7 @@ function setupQuickAdd(){
     document.querySelectorAll('section.tab').forEach(function(s){ s.classList.toggle('active', s.id==='tab-movimientos'); });
     render();
 
-    txType = 'ingreso';
-    document.querySelectorAll('#txTypeSeg button').forEach(function(x){ x.classList.toggle('sel', x.getAttribute('data-val')==='ingreso'); });
-    document.getElementById('txCatField').style.display = 'none';
-    document.getElementById('txSubcatField').style.display = 'none';
-    document.getElementById('ahorroModoField').style.display = 'none';
+    setTxType('ingreso');
     populateCategorySelects();
     document.getElementById('txDate').value = toISODate(new Date());
     var f = document.getElementById('txForm');

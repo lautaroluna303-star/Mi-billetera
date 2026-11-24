@@ -59,6 +59,9 @@
       <h2 class="section-title">Gastos por categoría</h2>
       <div class="barlist" id="catBarList"></div>
 
+      <h2 class="section-title">Mes a mes</h2>
+      <div id="monthChart"></div>
+
       <h2 class="section-title">Próximos vencimientos</h2>
       <div id="upcomingDebts"></div>
     </section>
@@ -134,16 +137,28 @@
             <input type="text" id="debtName" placeholder="Ej: Mamá, Juan, tarjeta...">
           </div>
           <div class="field">
-            <label>Monto ($)</label>
-            <input type="number" id="debtAmount" inputmode="decimal" min="0" step="1" placeholder="0">
+            <label>Tipo de deuda</label>
+            <div class="seg" id="debtKindSeg">
+              <button type="button" data-val="unica" class="sel">Única</button>
+              <button type="button" data-val="mensual">Mensual</button>
+              <button type="button" data-val="cuotas">En cuotas</button>
+            </div>
           </div>
           <div class="field">
-            <label>Fecha límite de pago</label>
+            <label>Monto ($) — en cuotas, el de cada cuota</label>
+            <input type="number" id="debtAmount" inputmode="decimal" min="0" step="1" placeholder="0">
+          </div>
+          <div class="field" id="debtCuotasField" style="display:none;">
+            <label>Cantidad de cuotas</label>
+            <input type="number" id="debtCuotas" inputmode="numeric" min="2" step="1" placeholder="Ej: 6">
+          </div>
+          <div class="field">
+            <label>Fecha límite de pago — si se repite, la de la próxima</label>
             <input type="date" id="debtDate">
           </div>
           <div class="field">
             <label>Notas (opcional)</label>
-            <textarea id="debtNotes" placeholder="Ej: en 2 cuotas, transferencia..."></textarea>
+            <textarea id="debtNotes" placeholder="Ej: transferencia, tarjeta..."></textarea>
           </div>
           <div class="submit-row">
             <button type="submit" class="pill-btn">Guardar deuda</button>
