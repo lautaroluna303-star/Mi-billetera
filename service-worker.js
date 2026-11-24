@@ -1,7 +1,9 @@
-const CACHE_NAME = 'mi-billetera-v2';
+const CACHE_NAME = 'mi-billetera-v3';
 const CORE_ASSETS = [
   './',
   './index.html',
+  './styles.css',
+  './app.js',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
@@ -39,7 +41,7 @@ self.addEventListener('fetch', function(event){
     return;
   }
 
-  // Mismo origen (app, iconos, manifest): cache primero, red como respaldo
+  // Mismo origen (app, estilos, iconos, manifest): cache primero, red como respaldo
   if(url.origin === self.location.origin){
     event.respondWith(
       caches.match(req).then(function(cached){
